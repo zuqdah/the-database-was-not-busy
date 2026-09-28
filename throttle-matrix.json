@@ -1,0 +1,177 @@
+{
+  "note": "Declared before the graded run. The thresholds are not invented and the phases are not hypothetical: every number in 'measured' was observed on this exact SLO before any expectation below was written, and two candidate designs were discarded because the measurements refused them. Recorded so a reader can tell measurement from assumption.",
+  "platform": {
+    "offer": "Azure SQL Database free offer, serverless General Purpose, 4 vCores",
+    "slo": "SQLDB_GP_S_GEN5_ON_GEN8AH_4_INTERNAL_GPGEN8HH_128IAD",
+    "why": "The free offer is permanent rather than a 12-month trial, and its exclusions do not bite here: this lab needs one database, no failover group and no elastic pool. The cap scales with vCores, so the drill reads it at run time rather than hard-coding 18."
+  },
+  "measured": {
+    "note": "Observed across six runs on 2026-09-28. Two designs were corrected by these numbers and one correction was itself wrong; what is written here is what the platform did.",
+    "primaryMaxLogRateMBps": 18,
+    "primaryMinLogRateMBps": 9,
+    "paced": {
+      "rows": 600000,
+      "logMB": 120.1,
+      "elapsedMs": 32014,
+      "achievedMBps": 3.75,
+      "peakLogPercent": 50.48,
+      "peakCpuPercent": 4.99
+    },
+    "saturated": {
+      "rows": 1800000,
+      "logMB": 598.3,
+      "elapsedMs": 31115,
+      "achievedMBps": 19.23,
+      "peakLogPercent": 97.94,
+      "peakCpuPercent": 7.37
+    },
+    "indexHeavy": {
+      "rows": 1200000,
+      "logMB": 821.3,
+      "elapsedMs": 49314,
+      "achievedMBps": 16.65,
+      "peakLogPercent": 85.91,
+      "peakCpuPercent": 20.41
+    },
+    "logPerRowKB": {
+      "minimalSchema": 0.205,
+      "threeNonclusteredIndexes": 0.701,
+      "ratio": 3.42
+    },
+    "governorWaitFlatOut": "0 ms in every phase. The governor paces smoothly at the ceiling and only charges wait time when a caller overshoots it, which is why avg_log_write_percent has to be the primary signal rather than the wait.",
+    "governorWaitOnColdOvershoot": "1620 ms across 114 waiting tasks, 51% of a 3147 ms insert, while the database was still cold and its ceiling correspondingly lower",
+    "stableAcrossRuns": {
+      "note": "Five runs of the final phase sizes. Only quantities whose spread is small against their gap are asserted -- margin, not repetition, is the reason to trust them.",
+      "pacedThroughputMBps": "3.75 to 3.81",
+      "saturatedThroughputMBps": "19.06 to 19.23",
+      "indexHeavyThroughputMBps": "14.76 to 16.65",
+      "pacedPeakLogPercent": "27.59 to 51.71, clearing the 90% threshold by at least 38 points",
+      "saturatedPeakLogPercent": "97.94 to 100, clearing it by at least 8 points",
+      "indexHeavyPeakLogPercent": "73.08 to 98.97 -- straddles the threshold, see knownVariance, nothing asserted",
+      "saturatedPeakCpuPercent": "7.37 to 8.37",
+      "indexHeavyPeakCpuPercent": "16.66 to 24.78",
+      "logPerRowKB": "0.203 to 0.205 minimal against 0.684 to 0.701 with three nonclustered indexes"
+    }
+  },
+  "discarded": [
+    {
+      "idea": "Minimal logging via a bulk load with TABLOCK",
+      "why": "Not available. Azure SQL Database is always in the FULL recovery model, so the remediation a SQL Server DBA reaches for first does not exist here at all."
+    },
+    {
+      "idea": "PAGE compression to shrink the logged row image",
+      "why": "Measured at 3.9% log reduction, 116.0 MB to 111.4 MB. A log record carries the row image, so the log only shrinks as much as the row does, and identifier-like text barely compresses. Kept because \"just compress it\" is the obvious suggestion and it is worth knowing it does nothing here."
+    },
+    {
+      "idea": "Grading on a log rate computed from sys.dm_io_virtual_file_stats",
+      "why": "One run measured 21.57 MB/s against an 18.00 MB/s ceiling. A rate above the ceiling proves that number is not the quantity the governor meters -- probably bytes written including padding rather than log generated. The drill grades on avg_log_write_percent, the platform view of its own limit, and treats a derived rate as descriptive only."
+    },
+    {
+      "idea": "An unthrottled control produced by using a minimal schema and fewer rows",
+      "why": "Measured at 19.56 MB/s and 100% log write. Small and minimal is not the same as under the ceiling: a short flat-out write saturates the channel as thoroughly as a long one. The control has to be paced in time, a design abandoned earlier for looking artificial and in fact the only honest one."
+    },
+    {
+      "idea": "Attributing samples with a window widened 20 seconds past each phase",
+      "why": "With phases running back to back the widening reaches into the next phase, so a 6-second control read the saturation of the 32-second workload after it and graded Throttled. Fixed with a quiet gap longer than the widening. An earlier hand measurement had 50-second gaps by accident and so never showed this."
+    },
+    {
+      "idea": "Declaring the index-heavy phase Throttled",
+      "why": "It was declared so on the strength of a 99.16% reading that was later proved to be window-bleed contamination from the adjacent phase. With correct attribution the same phase reads 73-90% and sits BELOW the ceiling at 16.65 MB/s. The lesson is the order of operations: the measurement that justified the change was already known to be suspect when the change was made."
+    },
+    {
+      "idea": "Asserting an ORDERING of log saturation between the index-heavy and saturated phases",
+      "why": "Claimed as stable on the strength of two runs, in which the index-heavy phase read 85.91% and 90.98% against a saturated phase at 97.94% and 100%. The third run read 98.97% against 98.27% and the ordering inverted. The lesson is about evidence rather than about SQL: two samples do not establish that something is stable, and the fix that replaced a flaky verdict with a flaky ordering was the same mistake at one remove."
+    }
+  ],
+  "thresholds": {
+    "saturatedLogWritePercent": 90,
+    "idleCpuPercent": 25,
+    "why": "90 for saturation because the throttled phase measured 97.94% and 100% while the paced control measured 41% and 50.48% -- both far from the line. The index-heavy phase lands near it and varies, which is why its throttle state is recorded under knownVariance rather than guarded. 25 for idle CPU because 4.99% to 20.41% was observed while the log channel was full or near it."
+  },
+  "phases": [
+    {
+      "id": "paced",
+      "load": "600,000 narrow rows in 30 batches of 20,000, one second apart",
+      "why": "The control, and it has to be paced rather than just small. Measured: an unpaced 600,000-row insert into the same minimal schema reaches 19.56 MB/s and 100% log write, because the ceiling is low enough that any flat-out bulk write hits it. Pacing is the only way to observe an unthrottled write on this tier, which is itself worth knowing."
+    },
+    {
+      "id": "saturated",
+      "load": "1,800,000 wide fixed-length rows into a table with a clustered primary key and nothing else",
+      "why": "The finding. Flat out, minimal schema, and the log channel is full at 18.69 MB/s against an 18.00 MB/s ceiling."
+    },
+    {
+      "id": "indexHeavy",
+      "load": "1,200,000 rows -- the 600,000-row source twice -- into a table carrying three nonclustered indexes",
+      "why": "The contrast that makes the diagnosis falsifiable. Measured at 16.65 MB/s, BELOW the ceiling, with the highest CPU of the three phases at 20.41%: it is slow because of index maintenance, not because of the governor. Without it, slow and throttled would be indistinguishable in this lab, which is the confusion it exists to break. Its throttle verdict is not graded -- see knownVariance."
+    }
+  ],
+  "guards": [
+    {
+      "id": "paced-is-not-throttled",
+      "title": "A write paced below the ceiling is not throttled",
+      "severity": "Baseline",
+      "phase": "paced",
+      "expect": "Unthrottled",
+      "why": "The control. It proves the harness can observe an unthrottled write, so a drill reporting Throttled for everything -- which is both what a broken metric read looks like and what this drill actually did on one run -- cannot pass the finding for free."
+    },
+    {
+      "id": "saturated-is-throttled",
+      "title": "An unpaced bulk write is held at the platform log ceiling",
+      "severity": "Critical",
+      "phase": "saturated",
+      "expect": "Throttled",
+      "why": "The finding. Throughput stops rising at a number set by the service tier, nothing about the query is the problem, and so nothing about the query will fix it."
+    }
+  ],
+  "assertions": [
+    {
+      "id": "cpu-stays-idle-while-throttled",
+      "severity": "Critical",
+      "expected": true,
+      "why": "The headline. CPU peaked at 7.37% while the log channel was reported at 97.94%, and data IO at 0%. CPU is the first and often the only metric anyone looks at, and a database can be flat out against a hard limit while reporting itself idle."
+    },
+    {
+      "id": "indexes-multiply-the-log-for-identical-rows",
+      "severity": "Critical",
+      "expected": true,
+      "why": "The actionable half, measured PER ROW so it survives a change in row count -- comparing raw totals would have turned a genuine 3.4x into a reported 6.7x the moment this phase doubled in size, and the assertion would have passed more emphatically while measuring something false. 0.205 KB of log per row into a minimal table against 0.701 KB into one with three nonclustered indexes. Against a fixed ceiling that difference is elapsed time. It is also the only lever that exists here: minimal logging is unavailable on Azure SQL and compression measured 3.9%."
+    },
+    {
+      "id": "throughput-does-not-indicate-throttling",
+      "severity": "Critical",
+      "expected": true,
+      "why": "Compared against the PACED CONTROL rather than the index-heavy phase, because the control is the only comparison that held on every run. The throttled phase achieves the HIGHEST throughput of the three at 19.06-19.23 MB/s; the unthrottled control achieves the LOWEST at 3.80-3.81 MB/s, five times slower. So slow does not mean throttled -- it is nearer the opposite, since hitting a rate ceiling requires going fast. An earlier version compared against the index-heavy phase and failed on its third run when that phase turned out to vary between 73% and 99% saturation."
+    },
+    {
+      "id": "index-maintenance-moves-the-cost-to-cpu",
+      "severity": "Critical",
+      "expected": true,
+      "why": "The other half of the diagnosis, and the one quantity about the index-heavy phase that has been stable: 16.66% to 21.28% CPU across runs against 7.37% to 8.08% for the throttled phase, roughly three times as much. Its log saturation varies wildly and is deliberately not part of this claim."
+    },
+    {
+      "id": "log-write-percent-does-report-it",
+      "severity": "Critical",
+      "expected": true,
+      "why": "Declared deliberately as a thing that WORKS, because the honest claim is narrower than the dramatic one. Azure does not hide this: avg_log_write_percent reports the saturation accurately. It is simply not the metric on the default blade, and the metric that is there misleads. If this ever fails the lab has a bigger problem than its finding."
+    },
+    {
+      "id": "the-dmv-is-still-filling-in-after-the-workload",
+      "severity": "Critical",
+      "expected": true,
+      "why": "Measured rather than assumed, and narrower than the claim it replaces. An earlier version asserted that reading sys.dm_db_resource_stats immediately after a workload finds nothing; that is true of a six-second write, which had zero covering samples, and false of a thirty-second one, which already had two. What holds for every phase is that the settled read finds MORE samples than the immediate one. A drill that reads once, early, reads a partial picture whatever the workload length."
+    },
+    {
+      "id": "the-cap-is-only-in-a-dmv",
+      "severity": "Critical",
+      "expected": true,
+      "why": "The ceiling is discoverable, but only through sys.dm_user_db_resource_governance.primary_max_log_rate, in bytes per second. It is not on the portal blade and not in the serverless pricing page, and the column is not named what older documentation suggests -- there is no max_log_rate."
+    }
+  ],
+  "knownVariance": [
+    {
+      "what": "The index-heavy phase relative to the log ceiling",
+      "observed": "Peak log write of 73.08%, 85.91%, 88.16%, 90.98%, 96.71% and 98.97% across six runs with correct sample attribution. On one of them it exceeded the saturated phase.",
+      "why": "Genuinely unstable, and not a measurement artefact: index maintenance makes log generation bursty, so this phase sometimes reaches the ceiling and sometimes does not. NOTHING about its saturation is asserted -- not a verdict, and not an ordering against another phase. Two earlier versions of this matrix claimed first the verdict and then the ordering was stable, each on the strength of two runs, and a third run refused both. What is asserted about this phase are the two quantities that did not move: it achieves lower throughput than the saturated phase on every run, and it uses more CPU."
+    }
+  ]
+}

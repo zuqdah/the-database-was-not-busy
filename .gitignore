@@ -1,0 +1,4 @@
+# Drill output. Written per run, never committed: a report in the repository
+# would be read as the current state of a database the drill mutates.
+throttle-report.json
+testResults.xml
